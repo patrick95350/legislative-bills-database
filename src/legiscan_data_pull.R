@@ -7,7 +7,10 @@
 #     Uses the following Packages
 #       {here}
 #       {httr}
+#       {xml2}
 #       {base64enc}
+#       {jsonlite}
+#       {pdftools}
 #
 #     Uses the following data
 #       
@@ -23,6 +26,7 @@ remove(list=ls(all=TRUE))
 library(here)
 
 library(httr)
+library(xml2)
 library(base64enc)
 library(jsonlite)
 library(pdftools)
@@ -49,7 +53,7 @@ if(file.exists(path) & !force_download_legiscan){
   legiscan_dbs_list <- readRDS(path)
 } else {
   request <- httr::GET('https://api.legiscan.com/',
-                       query = list(key = '2ef76bb3922d1a826f444e5f7d1fc36e',
+                       query = list(key = legiscan_api_key,
                                     op = 'getDataSetList',
                                     state = 'CA'))
   legiscan_dbs_list <- content(request)$datasetlist
@@ -74,7 +78,7 @@ if(file.exists(here::here('data', 'legiscan_dbs.RData')) & !force_download_legis
     
     # Make API call to Legiscan for single year of bills
     request <- httr::GET('https://api.legiscan.com/',
-                         query = list(key = '2ef76bb3922d1a826f444e5f7d1fc36e',
+                         query = list(key = legiscan_api_key,
                                       op = 'getDataSet',
                                       access_key = legiscan_dbs_list[[i]]$access_key,
                                       id = legiscan_dbs_list[[i]]$session_id))
@@ -182,13 +186,78 @@ for(i in seq_along(legiscan_budget_bills)){
 
 
 
-# Get text of chaptered budget bills
+# Download HTML versions of chaptered budget bills
+# Create directory to save local copies of downloaded bills
+path <- here::here('downloads', 'chaptered_budget_bills')
+if(!dir.exists(path)){
+  dir.create(path)
+}
+# Drop bills that don't have a chaptered version
+chaptered_budget_bills_list <- lapply(legiscan_budget_bills, \(x) lapply(x, \(x) "Chaptered" %in% x$texts$type))
+
+for(i in seq_along(legiscan_budget_bills)){
+  chaptered_bills_this_year <- legiscan_budget_bills[[1]][unlist(chaptered_budget_bills_list[[1]])]
+  
+  for(j in seq_along(chaptered_bills_this_year)){
+    # add check for local files
+    
+    request <- httr::GET('https://api.legiscan.com/',
+                         query = list(key = legiscan_api_key,
+                                      op = 'getDataSetList',
+                                      state = 'CA'))
+    
+    url <- https://api.legiscan.com/?key=
+      
+      &op=getBillText&id=2976729
+  }
+  
+  
+  
+  
+}
+
+
+
+
+
+chaptered_budget_bills_list <- legiscan_budget_bills[chaptered_budget_bills_list]
+# Clean up spaces, split the year and bill number and use  those to generate Legiscan links
+chaptered_budget_bills_list <- gsub(" ", '', names(chaptered_budget_bills_list)[chaptered_budget_bills_list])
+chaptered_budget_bills_list <- strsplit(chaptered_budget_bills_list, '.', fixed = TRUE)
+chaptered_budget_bills_list <- unlist(lapply(chaptered_budget_bills_list,
+                                             \(x) paste0('https://legiscan.com/CA/text/', x[2], '/', x[1])))
+
+progress_bar <- txtProgressBar(min=1,max=length(chaptered_budget_bills_list), style=3)
+
+//*[@id="bill"]
+
+for(i in seq_along(chaptered_budget_bills_list)){
+  print(i)
+  # Check if we've got all the files downloaded so we don't over-tax Legiscan
+  if(!(length(list.files(path)) == length(chaptered_budget_bills_list)) | force_download_legiscan){
+    # Get the HTML of the main Legiscan page for the bill and extract the link to the chaptered version
+    bill_nodes  <- xml2::read_html(chaptered_budget_bills_list[i])
+    bill_text <- xml_find_all(bill_nodes, "//*[@id='bill']")
+    bill_filename <- xml_find_all(bill_nodes, "//div[@id='gaits-wrapper']//a")
+    bill_filename <- xml_text(bill_filename[grep('-Chaptered\\.html', xml_text(bill_filename))])
+    
+    if(length(bill_text) == 1 & length(bill_filename) == 1){
+      write_xml(bill_text,
+                file = here::here(path, bill_filename))
+    } else {
+      warning('Could not find chaptered bill for ', chaptered_budget_bills_list[i], '.')
+    }
+  }
+  Sys.sleep(.01)
+  #setTxtProgressBar(progress_bar, i)
+}
+
 
 
 # Get LegiScan Person Data ####
 # Sessions are returned with most recent first, so for the current session just index to [[1]]
 # request <- httr::GET('https://api.legiscan.com/',
-#                      query = list(key = '2ef76bb3922d1a826f444e5f7d1fc36e',
+#                      query = list(key = legiscan_api_key,
 #                                   op = 'getSessionPeople',
 #                                   id = legiscan_dbs_list[[1]]$session_id))
 # legiscan_person_list <- do.call(rbind.data.frame, content(request)$sessionpeople$people)
