@@ -16,26 +16,34 @@
 #       
 
 # To Do
-#   1. Get LegiScan Data uploaded into MySQL
-#   2. Add parameter to force re-downloading from Legiscan
+#   Add parameter to force re-downloading from Legiscan
+#   Extract date filed with SOS and add to additional column
+#   Get LegiScan Data uploaded into MySQL
 
 # Clear the workspace
 remove(list=ls(all=TRUE))
 
 # Load Packages
 library(here)
+library(uuid)
 
 library(httr)
 library(xml2)
 library(base64enc)
 library(jsonlite)
 library(pdftools)
+library(RSQLite)
 
 # Inits
 setwd(here::here())
 
 force_download_legiscan <- FALSE
 force_download_sbud <- FALSE
+
+search_terms <-  c('Stanford', 'Stanford University','USC', 'University of Southern California', 'Santa Clara University')
+
+#search_terms <-  c('free lunch','free school lunch', 'summer lunch')
+#search_terms <-  c('free lunch','free school lunch', 'summer lunch', 'free school meal', 'summer meal')
 
 # Load Sourcefiles
 source(file = here::here('private', 'legiscan_api_key.R'))
@@ -213,88 +221,122 @@ for(i in seq_along(legiscan_budget_bills)){
   setTxtProgressBar(progress_bar, i)
 }
 
-# Parse HTML to extract budget items ####
+# Search budget bills for search terms ####
 path <- here::here('downloads', 'chaptered_budget_bills')
 budget_HTML_files_list <- list.files(path = path)
+run_id <- uuid::UUIDgenerate()
 
 #budget_bill_appropriations <- vector(mode = 'list', length = length(budget_HTML_files_list))
-pomona_bills <- vector(mode = 'list', length = length(budget_HTML_files_list))
 
-# Loop over each bill and parse
-for(i in seq_along(budget_HTML_files_list)){
+matched_bills <- vector(mode = 'list', length = length(search_terms))
+names(matched_bills) <- search_terms
+progress_bar <- txtProgressBar(min=1,max=length(budget_HTML_files_list) * length(search_terms), style=3)
+
+# Loop over each search term
+for(i in seq_along(search_terms)){
+  # Create temp list for each budget bill
+  search_results <- vector(mode = 'list', length = length(budget_HTML_files_list))
+  names(search_results) <- budget_HTML_files_list
   
-  # Read  in HTML and extract text
-  current_bill_text <- xml2::read_html(here::here(path, budget_HTML_files_list[i]), encoding = 'UTF-8', options = c('IGNORE_ENC')) |> xml2::xml_text()
+  # Loop over each budget bill
+  for(j in seq_along(budget_HTML_files_list)){
+    current_bill_text <- xml2::read_html(here::here(path, budget_HTML_files_list[j]), encoding = 'UTF-8', options = c('IGNORE_ENC')) |> xml2::xml_text()
+    search_results[[j]] <- grepl(search_terms[i], current_bill_text, ignore.case = TRUE)
+    setTxtProgressBar(progress_bar, progress_bar$getVal() + 1)
+  }
   
-  # Check if there are appropriations
-  # if(!grepl('Appropriation: yes', current_bill_text)){
-  #   #budget_bill_appropriations[[i]] <- NULL
-  #   message('No appropriations found in ', budget_HTML_files_list[i], '.')
-  # } else {
-  #   message('Appropriations found in ', budget_HTML_files_list[i], '.')
-  # }
-  # Handle carriage returns and tabs
-  #current_bill_text <- unlist(strsplit(current_bill_text, split = '\\n|\\t'))
+  search_results <- search_results[unlist(search_results)]
   
-  # Remove spaces and blanks
-  #current_bill_text <- current_bill_text[!current_bill_text=='']
-  #current_bill_text <- gsub('^ +', '', current_bill_text)
-  
-  # Drop Counsel's Digest
-  #start_of_bill_pattern <- 'THE PEOPLE OF THE STATE OF CALIFORNIA DO ENACT AS FOLLOWS|Resolved by the Senate, the Assembly concurring|Resolved by the Assembly, the Senate concurring'
-  #current_bill_text <- current_bill_text[(grep(start_of_bill_pattern, current_bill_text) + 1 ):length(current_bill_text)]
-  
-  # Add extra blank at end of bill for looping
-  #current_bill_text <- c(current_bill_text, '')
-  
-  # Remove statutory sections
-  
-  # Condense listed items into single line
-  # Patterns
-  #   '^SEC[T\\.]I?O?N? [0-9]+' matches 'SECTION' and 'SEC.' headings
-  #   '^\\(\\w+?\\)' matches '(a) (1) (A)' headings
-  #   '^[0-9]+\\.  ' matches '69453.  ' statute headings
-  # headings_pattern <- '^SEC[T\\.]I?O?N? [0-9]+|^\\(\\w+?\\)|^[0-9]+\\.'
-  # line_item_index <- grep(headings_pattern, current_bill_text)
-  # 
-  # for(j in  seq_along(line_item_index)){
-  #   k <- line_item_index[j] + 1
-  #   while(!grepl(headings_pattern, current_bill_text[k]) & !(current_bill_text[k] == '')){
-  #     current_bill_text[line_item_index[j]] <- paste(current_bill_text[line_item_index[j]], current_bill_text[k])
-  #     current_bill_text[k] <- ''
-  #     k <- k+1
-  #   }
-  # }
-  
-  # Search for POMONA in the text
-  pomona_search <- grepl('POMONA', current_bill_text, ignore.case = TRUE)
-  
-  pomona_bills[[i]] <- sum(pomona_search)
-  
-  # ### STOPPED HERE IDENTIFYING INDIVIDUAL ITEMS, SWITCHING TO JUST SEARCHING FOR POMONA
-  # 
-  # # Process line items with dollar appropriations
-  # # Find broad appropriations that aren't broken down, or just the broken out items
-  # line_item_index <- which((grepl('The sum of .+? dollars \\(\\$[0-9,]+\\) is hereby appropriated', current_bill_text) &
-  #                             !grepl('allocation pursuant to the following schedule', current_bill_text)) |
-  #                            grepl('^\\(\\w+?\\) .+?\\$[0-9,]+', current_bill_text))
-  # current_bill_line_items <- vector(mode = 'list', length = length(line_item_index))
-  # 
-  # for(j in seq_along(line_item_index)){
-  #   current_bill_line_items[[j]] <- c(gsub('^\\(\\w+?\\) (.+?) +\\$[0-9\\,]+', '\\1', current_bill_text[line_item_index[j]]),
-  #                                     gsub('^\\(\\w+?\\) .+? +(\\$[0-9\\,]+) *.*$', '\\1', current_bill_text[line_item_index[j]]))
-  # }
-  # 
-  # temp <- do.call(rbind.data.frame, current_bill_line_items)
-  # colnames(temp)  <- c('desc', 'amount')
-  # temp$bill <- budget_HTML_files_list[i]
-  # 
-  # budget_bill_appropriations[[i]] <- temp
-  
-  
+  if(length(search_results) > 0){
+    search_results <- data.frame(Bill = gsub('^20[0-9]{2}_([AS][BCRA]+)([0-9]+).html', '\\1 \\2', names(search_results)),
+                                 `Fiscal Year` = gsub('^(20[0-9]{2})_[AS][BCRA]+[0-9]+.html', '\\1', names(search_results)),
+                                 Type = '',
+                                 Item = '',
+                                 Amount = '',
+                                 Link = '',
+                                 `Also Appears In` = '')
+    
+    even <- as.numeric(search_results$Fiscal.Year) %% 2 == 0
+    
+    search_results$Fiscal.Year[!even] <- paste0(search_results$Fiscal.Year[!even], '-', as.numeric(search_results$Fiscal.Year[!even])+1)
+    search_results$Fiscal.Year[even] <- paste0(as.numeric(search_results$Fiscal.Year[even])-1, '-', search_results$Fiscal.Year[even])
+    
+    search_results$Link <- gsub('-|[ ]', '', paste0('https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=', search_results$Fiscal.Year, '0', search_results$Bill))
+    
+    matched_bills[[i]] <- search_results
+    
+    write.csv(search_results, file = here::here('output', paste0(run_id, '_', search_terms[i], '.csv')), row.names = FALSE)
+  }
 }
 
 
+
+
+# SCRAP CODE ####
+
+# Read  in HTML and extract text
+
+# Check if there are appropriations
+# if(!grepl('Appropriation: yes', current_bill_text)){
+#   #budget_bill_appropriations[[i]] <- NULL
+#   message('No appropriations found in ', budget_HTML_files_list[i], '.')
+# } else {
+#   message('Appropriations found in ', budget_HTML_files_list[i], '.')
+# }
+# Handle carriage returns and tabs
+#current_bill_text <- unlist(strsplit(current_bill_text, split = '\\n|\\t'))
+
+# Remove spaces and blanks
+#current_bill_text <- current_bill_text[!current_bill_text=='']
+#current_bill_text <- gsub('^ +', '', current_bill_text)
+
+# Drop Counsel's Digest
+#start_of_bill_pattern <- 'THE PEOPLE OF THE STATE OF CALIFORNIA DO ENACT AS FOLLOWS|Resolved by the Senate, the Assembly concurring|Resolved by the Assembly, the Senate concurring'
+#current_bill_text <- current_bill_text[(grep(start_of_bill_pattern, current_bill_text) + 1 ):length(current_bill_text)]
+
+# Add extra blank at end of bill for looping
+#current_bill_text <- c(current_bill_text, '')
+
+# Remove statutory sections
+
+# Condense listed items into single line
+# Patterns
+#   '^SEC[T\\.]I?O?N? [0-9]+' matches 'SECTION' and 'SEC.' headings
+#   '^\\(\\w+?\\)' matches '(a) (1) (A)' headings
+#   '^[0-9]+\\.  ' matches '69453.  ' statute headings
+# headings_pattern <- '^SEC[T\\.]I?O?N? [0-9]+|^\\(\\w+?\\)|^[0-9]+\\.'
+# line_item_index <- grep(headings_pattern, current_bill_text)
+# 
+# for(j in  seq_along(line_item_index)){
+#   k <- line_item_index[j] + 1
+#   while(!grepl(headings_pattern, current_bill_text[k]) & !(current_bill_text[k] == '')){
+#     current_bill_text[line_item_index[j]] <- paste(current_bill_text[line_item_index[j]], current_bill_text[k])
+#     current_bill_text[k] <- ''
+#     k <- k+1
+#   }
+# }
+
+
+
+# ### STOPPED HERE IDENTIFYING INDIVIDUAL ITEMS, SWITCHING TO JUST SEARCHING FOR POMONA
+# 
+# # Process line items with dollar appropriations
+# # Find broad appropriations that aren't broken down, or just the broken out items
+# line_item_index <- which((grepl('The sum of .+? dollars \\(\\$[0-9,]+\\) is hereby appropriated', current_bill_text) &
+#                             !grepl('allocation pursuant to the following schedule', current_bill_text)) |
+#                            grepl('^\\(\\w+?\\) .+?\\$[0-9,]+', current_bill_text))
+# current_bill_line_items <- vector(mode = 'list', length = length(line_item_index))
+# 
+# for(j in seq_along(line_item_index)){
+#   current_bill_line_items[[j]] <- c(gsub('^\\(\\w+?\\) (.+?) +\\$[0-9\\,]+', '\\1', current_bill_text[line_item_index[j]]),
+#                                     gsub('^\\(\\w+?\\) .+? +(\\$[0-9\\,]+) *.*$', '\\1', current_bill_text[line_item_index[j]]))
+# }
+# 
+# temp <- do.call(rbind.data.frame, current_bill_line_items)
+# colnames(temp)  <- c('desc', 'amount')
+# temp$bill <- budget_HTML_files_list[i]
+# 
+# budget_bill_appropriations[[i]] <- temp
 
 
 # Get LegiScan Person Data ####

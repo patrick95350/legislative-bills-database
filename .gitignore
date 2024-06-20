@@ -3,8 +3,9 @@
 .RData
 .Ruserdata
 
-data
-logs
 archive
-private
+data
 downloads
+logs
+output
+private
