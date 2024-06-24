@@ -19,6 +19,7 @@
 #   Add parameter to force re-downloading from Legiscan
 #   Extract date filed with SOS and add to additional column
 #   Get LegiScan Data uploaded into MySQL
+#   Add Option to use LegInfo appropriation flag instead of SBUD list
 
 # Clear the workspace
 remove(list=ls(all=TRUE))
