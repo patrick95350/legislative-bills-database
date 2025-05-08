@@ -41,7 +41,7 @@ run_id <- uuid::UUIDgenerate()
 source(file = here::here('src', 'legiscan_data_pull.R'))
 
 # User Parameters
-force_download_legiscan <- FALSE
+force_download_legiscan <- TRUE
 force_download_sbud <- FALSE
 all_bills <- TRUE
 

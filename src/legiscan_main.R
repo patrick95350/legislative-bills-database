@@ -41,8 +41,13 @@ setwd(here::here())
 force_download_legiscan <- FALSE
 force_download_sbud <- FALSE
 
-search_terms <-  c('Stanford', 'Stanford University','USC', 'University of Southern California', 'Santa Clara University')
+chaptered_only <- FALSE
+budget_only <- FALSE
 
+# house housing rent tenant tenancy landlord 
+search_terms <-  c('housing affordability', 'housing cost','housing subsidy', 'housing program', 'low cost housing')
+
+#search_terms <-  c('Stanford', 'Stanford University','USC', 'University of Southern California', 'Santa Clara University')
 #search_terms <-  c('free lunch','free school lunch', 'summer lunch')
 #search_terms <-  c('free lunch','free school lunch', 'summer lunch', 'free school meal', 'summer meal')
 
@@ -59,6 +64,184 @@ source(file = here::here('src', 'sbud_budget_bill_links.R'))
 # Get LegiScan Bill Data ####
 legiscan_dbs2 <- get_legiscan_data(force_download = force_download_legiscan)
 
+# Get Budget Bills from Senate Budget Committee ####
+if(budget_only){
+  sbud_budget_bills <- vector(mode = 'list', length = length(sbud_budget_bills_links))
+  progress_bar <- txtProgressBar(min=1,max=length(sbud_budget_bills), style=3)
+  
+  for(i in seq_along(sbud_budget_bills)){
+    # Create filename for PDF
+    pdf_file <- paste0(sbud_budget_bills_links[[i]][1], '_Budget_Bills.pdf')
+    # Download
+    if(!file.exists(here::here('downloads', pdf_file)) & !force_download_sbud){
+      download.file(sbud_budget_bills_links[[i]][2],
+                    here::here('downloads', pdf_file),
+                    quiet = TRUE,
+                    mode = 'wb')
+    }
+    
+    # Parse text from PDF
+    sbud_budget_bills_temp <- pdf_text(here::here('downloads', pdf_file)) |>
+      strsplit('\n') |>
+      unlist() |>
+      gsub('^ +', '', x=_)
+    
+    # Keep only lines with Bills
+    sbud_budget_bills_temp <- sbud_budget_bills_temp[grep('^[AS][BC]A? [0-9]', sbud_budget_bills_temp)]
+    # Only need bill number
+    sbud_budget_bills_temp <- gsub('^([AS][BC]A? [0-9]+).+', '\\1', sbud_budget_bills_temp)
+    
+    sbud_budget_bills[[i]] <- sbud_budget_bills_temp
+    names(sbud_budget_bills)[i] <- sbud_budget_bills_links[[i]][1]
+    
+    setTxtProgressBar(progress_bar, i)
+  }
+  
+  # Create List of Budget Bills with Legiscan Data ####
+  legiscan_budget_bills <- vector(mode = 'list', length = length(sbud_budget_bills))
+  names(legiscan_budget_bills) <- names(sbud_budget_bills)
+  progress_bar <- txtProgressBar(min=1,max=length(legiscan_budget_bills), style=3)
+  
+  for(i in seq_along(legiscan_budget_bills)){
+    # Determine session
+    if((as.numeric(names(legiscan_budget_bills)[i]) %% 2) == 1){
+      # Sessions start on odd years
+      path <- here::here('data',
+                         paste0(as.numeric(names(legiscan_budget_bills)[i]), '-', 
+                                as.numeric(names(legiscan_budget_bills)[i]) + 1, ' Regular Session'),
+                         "CA",
+                         paste0(as.numeric(names(legiscan_budget_bills)[i]), '-', 
+                                as.numeric(names(legiscan_budget_bills)[i]) + 1, '_Regular_Session'))
+    } else {
+      # Sessions end on even years
+      path <- here::here('data',
+                         paste0(as.numeric(names(legiscan_budget_bills)[i]) - 1, '-', 
+                                as.numeric(names(legiscan_budget_bills)[i]), ' Regular Session'),
+                         "CA",
+                         paste0(as.numeric(names(legiscan_budget_bills)[i]) - 1, '-', 
+                                as.numeric(names(legiscan_budget_bills)[i]), '_Regular_Session'))
+    }
+    
+    # Create temporary list to store JSON from each budget bill for the current year
+    legiscan_budget_bills_temp <- vector(mode = 'list', length = length(sbud_budget_bills[[i]]))
+    names(legiscan_budget_bills_temp) <- sbud_budget_bills[[i]]
+    
+    # Process
+    for(j in seq_along(legiscan_budget_bills_temp)){
+      legiscan_budget_bills_temp[[j]] <- jsonlite::fromJSON(here::here(path, 'bill', paste0(gsub(' ', '', names(legiscan_budget_bills_temp)[j]), '.json')))$bill
+    }
+    
+    # Save results to legiscan_budget_bills
+    legiscan_budget_bills[[i]] <- legiscan_budget_bills_temp
+    setTxtProgressBar(progress_bar, i)
+  }
+}
+
+# Download HTML versions of chaptered budget bills ####
+# Create directory to save local copies of downloaded bills
+path <- here::here('downloads', 'chaptered_budget_bills')
+if(!dir.exists(path)){
+  dir.create(path)
+}
+
+# Drop bills that don't have a chaptered version
+if(chaptered_only){
+  message("Keeping only chaptered bills")
+  chaptered_budget_bills_list <- lapply(legiscan_budget_bills, \(x) lapply(x, \(x) 'Chaptered' %in% x$texts$type))
+  
+  progress_bar <- txtProgressBar(min=1,max=length(legiscan_budget_bills), style=3)
+  setTxtProgressBar(progress_bar, 1)
+  
+  for(i in seq_along(legiscan_budget_bills)){
+    current_year <- names(legiscan_budget_bills)[i]
+    # Get a list of the chaptered budget bills for current year
+    chaptered_bills_this_year <- legiscan_budget_bills[[i]][unlist(chaptered_budget_bills_list[[i]])]
+    
+    for(j in seq_along(chaptered_bills_this_year)){
+      current_bill <- gsub(' ', '',names(chaptered_bills_this_year)[j])
+      # Check if we've got all the files downloaded so we don't over-tax Legiscan
+      if(!(length(list.files(path)) == sum(unlist(chaptered_budget_bills_list))) | force_download_legiscan){
+        # Name the HTML files  with the year and bill number
+        html_file <- paste0(current_year, '_', current_bill, '.html')
+        # Get the doc id from the texts list from each bill, we want the last id, because that's the chaptered version
+        doc_id <- chaptered_bills_this_year[[j]]$texts$doc_id
+        doc_id <- doc_id[length(doc_id)]
+        # Send an API call to LegiScan to get the bill text
+        request <- httr::GET('https://api.legiscan.com/',
+                             query = list(key = legiscan_api_key,
+                                          op = 'getBillText',
+                                          id = doc_id))
+        # Extract the content from the response, decode it and write it as a bbinary to the HTML file
+        writeBin(base64_dec(httr::content(request)$text$doc), here::here(path, html_file))
+      }
+    }
+    setTxtProgressBar(progress_bar, i)
+  }
+} else {
+  message("Keeping all bills")
+}
+
+
+
+
+### Current code only searches budget bills
+# add code to optionally search all bills
+
+
+
+
+# Search budget bills for search terms ####
+path <- here::here('downloads', 'chaptered_budget_bills')
+budget_HTML_files_list <- list.files(path = path)
+run_id <- uuid::UUIDgenerate()
+
+#budget_bill_appropriations <- vector(mode = 'list', length = length(budget_HTML_files_list))
+
+matched_bills <- vector(mode = 'list', length = length(search_terms))
+names(matched_bills) <- search_terms
+progress_bar <- txtProgressBar(min=1,max=length(budget_HTML_files_list) * length(search_terms), style=3)
+
+# Loop over each search term
+for(i in seq_along(search_terms)){
+  # Create temp list for each budget bill
+  search_results <- vector(mode = 'list', length = length(budget_HTML_files_list))
+  names(search_results) <- budget_HTML_files_list
+  
+  # Loop over each budget bill
+  for(j in seq_along(budget_HTML_files_list)){
+    current_bill_text <- xml2::read_html(here::here(path, budget_HTML_files_list[j]), encoding = 'UTF-8', options = c('IGNORE_ENC')) |> xml2::xml_text()
+    search_results[[j]] <- grepl(search_terms[i], current_bill_text, ignore.case = TRUE)
+    setTxtProgressBar(progress_bar, progress_bar$getVal() + 1)
+  }
+  
+  search_results <- search_results[unlist(search_results)]
+  
+  if(length(search_results) > 0){
+    search_results <- data.frame(Bill = gsub('^20[0-9]{2}_([AS][BCRA]+)([0-9]+).html', '\\1 \\2', names(search_results)),
+                                 `Fiscal Year` = gsub('^(20[0-9]{2})_[AS][BCRA]+[0-9]+.html', '\\1', names(search_results)),
+                                 Type = '',
+                                 Item = '',
+                                 Amount = '',
+                                 Link = '',
+                                 `Also Appears In` = '')
+    
+    even <- as.numeric(search_results$Fiscal.Year) %% 2 == 0
+    
+    search_results$Fiscal.Year[!even] <- paste0(search_results$Fiscal.Year[!even], '-', as.numeric(search_results$Fiscal.Year[!even])+1)
+    search_results$Fiscal.Year[even] <- paste0(as.numeric(search_results$Fiscal.Year[even])-1, '-', search_results$Fiscal.Year[even])
+    
+    search_results$Link <- gsub('-|[ ]', '', paste0('https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=', search_results$Fiscal.Year, '0', search_results$Bill))
+    
+    matched_bills[[i]] <- search_results
+    
+    write.csv(search_results, file = here::here('output', paste0(run_id, '_', search_terms[i], '.csv')), row.names = FALSE)
+  }
+}
+
+
+
+
+# SCRAP CODE ####
 
 
 # List of  Databases
@@ -119,167 +302,8 @@ legiscan_dbs2 <- get_legiscan_data(force_download = force_download_legiscan)
 #   saveRDS(legiscan_dbs, here::here('data', 'legiscan_dbs.RData'))
 # }
 
-# Get Budget Bills from Senate Budget Committee ####
-sbud_budget_bills <- vector(mode = 'list', length = length(sbud_budget_bills_links))
-progress_bar <- txtProgressBar(min=1,max=length(sbud_budget_bills), style=3)
-
-for(i in seq_along(sbud_budget_bills)){
-  # Create filename for PDF
-  pdf_file <- paste0(sbud_budget_bills_links[[i]][1], '_Budget_Bills.pdf')
-  # Download
-  if(!file.exists(here::here('downloads', pdf_file)) & !force_download_sbud){
-    download.file(sbud_budget_bills_links[[i]][2],
-                  here::here('downloads', pdf_file),
-                  quiet = TRUE,
-                  mode = 'wb')
-  }
-
-  # Parse text from PDF
-  sbud_budget_bills_temp <- pdf_text(here::here('downloads', pdf_file)) |>
-    strsplit('\n') |>
-    unlist() |>
-    gsub('^ +', '', x=_)
-
-  # Keep only lines with Bills
-  sbud_budget_bills_temp <- sbud_budget_bills_temp[grep('^[AS][BC]A? [0-9]', sbud_budget_bills_temp)]
-  # Only need bill number
-  sbud_budget_bills_temp <- gsub('^([AS][BC]A? [0-9]+).+', '\\1', sbud_budget_bills_temp)
-  
-  sbud_budget_bills[[i]] <- sbud_budget_bills_temp
-  names(sbud_budget_bills)[i] <- sbud_budget_bills_links[[i]][1]
-  
-  setTxtProgressBar(progress_bar, i)
-}
-
-# Create List of Budget Bills with Legiscan Data ####
-legiscan_budget_bills <- vector(mode = 'list', length = length(sbud_budget_bills))
-names(legiscan_budget_bills) <- names(sbud_budget_bills)
-progress_bar <- txtProgressBar(min=1,max=length(legiscan_budget_bills), style=3)
-
-for(i in seq_along(legiscan_budget_bills)){
-  # Determine session
-  if((as.numeric(names(legiscan_budget_bills)[i]) %% 2) == 1){
-    # Sessions start on odd years
-    path <- here::here('data',
-                       paste0(as.numeric(names(legiscan_budget_bills)[i]), '-', 
-                              as.numeric(names(legiscan_budget_bills)[i]) + 1, ' Regular Session'),
-                       "CA",
-                       paste0(as.numeric(names(legiscan_budget_bills)[i]), '-', 
-                              as.numeric(names(legiscan_budget_bills)[i]) + 1, '_Regular_Session'))
-  } else {
-    # Sessions end on even years
-    path <- here::here('data',
-                       paste0(as.numeric(names(legiscan_budget_bills)[i]) - 1, '-', 
-                              as.numeric(names(legiscan_budget_bills)[i]), ' Regular Session'),
-                       "CA",
-                       paste0(as.numeric(names(legiscan_budget_bills)[i]) - 1, '-', 
-                              as.numeric(names(legiscan_budget_bills)[i]), '_Regular_Session'))
-  }
-  
-  # Create temporary list to store JSON from each budget bill for the current year
-  legiscan_budget_bills_temp <- vector(mode = 'list', length = length(sbud_budget_bills[[i]]))
-  names(legiscan_budget_bills_temp) <- sbud_budget_bills[[i]]
-  
-  # Process
-  for(j in seq_along(legiscan_budget_bills_temp)){
-    legiscan_budget_bills_temp[[j]] <- jsonlite::fromJSON(here::here(path, 'bill', paste0(gsub(' ', '', names(legiscan_budget_bills_temp)[j]), '.json')))$bill
-  }
-
-  # Save results to legiscan_budget_bills
-  legiscan_budget_bills[[i]] <- legiscan_budget_bills_temp
-  setTxtProgressBar(progress_bar, i)
-}
-
-# Download HTML versions of chaptered budget bills ####
-# Create directory to save local copies of downloaded bills
-path <- here::here('downloads', 'chaptered_budget_bills')
-if(!dir.exists(path)){
-  dir.create(path)
-}
-# Drop bills that don't have a chaptered version
-chaptered_budget_bills_list <- lapply(legiscan_budget_bills, \(x) lapply(x, \(x) 'Chaptered' %in% x$texts$type))
-
-progress_bar <- txtProgressBar(min=1,max=length(legiscan_budget_bills), style=3)
-setTxtProgressBar(progress_bar, 1)
-
-for(i in seq_along(legiscan_budget_bills)){
-  current_year <- names(legiscan_budget_bills)[i]
-  # Get a list of the chaptered budget bills for current year
-  chaptered_bills_this_year <- legiscan_budget_bills[[i]][unlist(chaptered_budget_bills_list[[i]])]
-  
-  for(j in seq_along(chaptered_bills_this_year)){
-    current_bill <- gsub(' ', '',names(chaptered_bills_this_year)[j])
-    # Check if we've got all the files downloaded so we don't over-tax Legiscan
-    if(!(length(list.files(path)) == sum(unlist(chaptered_budget_bills_list))) | force_download_legiscan){
-      # Name the HTML files  with the year and bill number
-      html_file <- paste0(current_year, '_', current_bill, '.html')
-      # Get the doc id from the texts list from each bill, we want the last id, because that's the chaptered version
-      doc_id <- chaptered_bills_this_year[[j]]$texts$doc_id
-      doc_id <- doc_id[length(doc_id)]
-      # Send an API call to LegiScan to get the bill text
-      request <- httr::GET('https://api.legiscan.com/',
-                           query = list(key = legiscan_api_key,
-                                        op = 'getBillText',
-                                        id = doc_id))
-      # Extract the content from the response, decode it and write it as a bbinary to the HTML file
-      writeBin(base64_dec(httr::content(request)$text$doc), here::here(path, html_file))
-    }
-  }
-  setTxtProgressBar(progress_bar, i)
-}
-
-# Search budget bills for search terms ####
-path <- here::here('downloads', 'chaptered_budget_bills')
-budget_HTML_files_list <- list.files(path = path)
-run_id <- uuid::UUIDgenerate()
-
-#budget_bill_appropriations <- vector(mode = 'list', length = length(budget_HTML_files_list))
-
-matched_bills <- vector(mode = 'list', length = length(search_terms))
-names(matched_bills) <- search_terms
-progress_bar <- txtProgressBar(min=1,max=length(budget_HTML_files_list) * length(search_terms), style=3)
-
-# Loop over each search term
-for(i in seq_along(search_terms)){
-  # Create temp list for each budget bill
-  search_results <- vector(mode = 'list', length = length(budget_HTML_files_list))
-  names(search_results) <- budget_HTML_files_list
-  
-  # Loop over each budget bill
-  for(j in seq_along(budget_HTML_files_list)){
-    current_bill_text <- xml2::read_html(here::here(path, budget_HTML_files_list[j]), encoding = 'UTF-8', options = c('IGNORE_ENC')) |> xml2::xml_text()
-    search_results[[j]] <- grepl(search_terms[i], current_bill_text, ignore.case = TRUE)
-    setTxtProgressBar(progress_bar, progress_bar$getVal() + 1)
-  }
-  
-  search_results <- search_results[unlist(search_results)]
-  
-  if(length(search_results) > 0){
-    search_results <- data.frame(Bill = gsub('^20[0-9]{2}_([AS][BCRA]+)([0-9]+).html', '\\1 \\2', names(search_results)),
-                                 `Fiscal Year` = gsub('^(20[0-9]{2})_[AS][BCRA]+[0-9]+.html', '\\1', names(search_results)),
-                                 Type = '',
-                                 Item = '',
-                                 Amount = '',
-                                 Link = '',
-                                 `Also Appears In` = '')
-    
-    even <- as.numeric(search_results$Fiscal.Year) %% 2 == 0
-    
-    search_results$Fiscal.Year[!even] <- paste0(search_results$Fiscal.Year[!even], '-', as.numeric(search_results$Fiscal.Year[!even])+1)
-    search_results$Fiscal.Year[even] <- paste0(as.numeric(search_results$Fiscal.Year[even])-1, '-', search_results$Fiscal.Year[even])
-    
-    search_results$Link <- gsub('-|[ ]', '', paste0('https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=', search_results$Fiscal.Year, '0', search_results$Bill))
-    
-    matched_bills[[i]] <- search_results
-    
-    write.csv(search_results, file = here::here('output', paste0(run_id, '_', search_terms[i], '.csv')), row.names = FALSE)
-  }
-}
 
 
-
-
-# SCRAP CODE ####
 
 # Read  in HTML and extract text
 
